@@ -70,8 +70,18 @@ for (const [x, y, rx, ry] of [[130, 330, 165, 9], [742, 310, 185, 7], [824, 420,
   ellipse(x, y, rx, ry, [177, 100, 133], .28);
   ellipse(x - 12, y - 3, rx * .9, ry * .28, [255, 184, 165], .45);
 }
-halo(418, 470, 163, [255, 204, 125], .34);
-halo(418, 342, 66, [255, 177, 171], .24);
+// Feathered concentric glazes carry the light beyond each disc's edge.
+function sunGlow(cx: number, cy: number, rings: number[][], color: Color, feather: number) {
+  for (const [radius, opacity] of rings) {
+    for (let y = Math.max(0, Math.floor((cy - radius) * S)); y < Math.min(558 * S, (cy + radius) * S); y++)
+      for (let x = Math.max(0, Math.floor((cx - radius) * S)); x < Math.min(N, (cx + radius) * S); x++) {
+        const t = clamp((radius - Math.hypot(x / S - cx, y / S - cy)) / feather);
+        if (t) dot(x, y, color, opacity * t * t * (3 - 2 * t));
+      }
+  }
+}
+sunGlow(418, 470, [[154, .08], [136, .10], [118, .14], [102, .20]], [255, 204, 125], 18);
+sunGlow(418, 342, [[54, .04], [46, .06], [38, .09]], [255, 177, 171], 10);
 ellipse(418, 342, 30, 30, [247, 164, 163]);
 ellipse(418, 470, 88, 88, [255, 209, 126]);
 ellipse(418, 467, 83, 83, [255, 213, 137], .24);
