@@ -1,282 +1,207 @@
-// Fresh, deterministic travel-poster renderer. Run with `node main.ts`; writes entry.png under MAKEFUN_OUTPUT_DIR (or /output).
-// The rasterizer and PNG encoder use only Node's built-in modules.
+// SOLMARA: an imagined island, rendered deterministically for the poster gate.
+// Local preview: MAKEFUN_OUTPUT_DIR=out1 node main.ts
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { deflateSync } from 'node:zlib';
 import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
 
-const OUT_W = 1024;
-const OUT_H = 1024;
-const SCALE = 2;
-const W = OUT_W * SCALE;
-const H = OUT_H * SCALE;
-const pixels = Buffer.alloc(W * H * 3);
+const W = 1024, S = 2, N = W * S;
+const pixels = new Uint8Array(N * N * 3);
+type Color = [number, number, number];
+const cream: Color = [255, 239, 204];
+const mix = (a: Color, b: Color, t: number): Color => a.map((v, k) => v + (b[k] - v) * t) as Color;
+const clamp = (v: number) => Math.max(0, Math.min(1, v));
+function dot(x: number, y: number, c: Color, a = 1) {
+  if (x < 0 || y < 0 || x >= N || y >= N) return;
+  const i = (y * N + x) * 3;
+  for (let k = 0; k < 3; k++) pixels[i + k] = Math.round(pixels[i + k] * (1 - a) + c[k] * a);
+}
+function rect(x: number, y: number, w: number, h: number, c: Color, a = 1) {
+  for (let j = Math.max(0, Math.floor(y * S)); j < Math.min(N, (y + h) * S); j++)
+    for (let i = Math.max(0, Math.floor(x * S)); i < Math.min(N, (x + w) * S); i++) dot(i, j, c, a);
+}
+function ellipse(cx: number, cy: number, rx: number, ry: number, c: Color, a = 1) {
+  for (let y = Math.max(0, Math.floor((cy - ry) * S)); y <= Math.min(N - 1, (cy + ry) * S); y++) {
+    const t = (y / S - cy) / ry;
+    const dx = rx * Math.sqrt(Math.max(0, 1 - t * t));
+    for (let x = Math.max(0, Math.ceil((cx - dx) * S)); x <= Math.min(N - 1, (cx + dx) * S); x++) dot(x, y, c, a);
+  }
+}
+function poly(p: number[][], c: Color, a = 1) {
+  const lo = Math.max(0, Math.floor(Math.min(...p.map(v => v[1])) * S));
+  const hi = Math.min(N - 1, Math.ceil(Math.max(...p.map(v => v[1])) * S));
+  for (let y = lo; y <= hi; y++) {
+    const yy = (y + .5) / S, hits: number[] = [];
+    for (let i = 0; i < p.length; i++) {
+      const q = p[i], r = p[(i + 1) % p.length];
+      if ((q[1] <= yy && r[1] > yy) || (r[1] <= yy && q[1] > yy)) hits.push(q[0] + (yy - q[1]) * (r[0] - q[0]) / (r[1] - q[1]));
+    }
+    hits.sort((a, b) => a - b);
+    for (let i = 0; i + 1 < hits.length; i += 2)
+      for (let x = Math.max(0, Math.ceil(hits[i] * S)); x < Math.min(N, hits[i + 1] * S); x++) dot(x, y, c, a);
+  }
+}
+function line(x: number, y: number, xx: number, yy: number, width: number, c: Color, a = 1) {
+  const d = Math.hypot(xx - x, yy - y), nx = -(yy - y) / d * width / 2, ny = (xx - x) / d * width / 2;
+  poly([[x + nx, y + ny], [xx + nx, yy + ny], [xx - nx, yy - ny], [x - nx, y - ny]], c, a);
+}
+function halo(cx: number, cy: number, r: number, c: Color, strength: number) {
+  for (let y = Math.max(0, Math.floor((cy - r) * S)); y < Math.min(N, (cy + r) * S); y++)
+    for (let x = Math.max(0, Math.floor((cx - r) * S)); x < Math.min(N, (cx + r) * S); x++) {
+      const t = clamp(1 - Math.hypot(x / S - cx, y / S - cy) / r);
+      if (t) dot(x, y, c, t * t * strength);
+    }
+}
 
-const FONT = {
-  A: ['01110','10001','10001','11111','10001','10001','10001'],
-  C: ['01111','10000','10000','10000','10000','10000','01111'],
-  E: ['11111','10000','10000','11110','10000','10000','11111'],
-  F: ['11111','10000','10000','11110','10000','10000','10000'],
-  H: ['10001','10001','10001','11111','10001','10001','10001'],
+// A continuous dusk sky and a sea that gains weight toward the foreground.
+const sky: [number, Color][] = [[0, [42, 33, 76]], [.42, [111, 59, 103]], [.73, [207, 111, 119]], [1, [255, 186, 111]]];
+for (let y = 0; y < N; y++) {
+  const py = y / S;
+  let c: Color;
+  if (py < 558) {
+    const t = py / 558;
+    let k = 0; while (k < sky.length - 2 && t > sky[k + 1][0]) k++;
+    c = mix(sky[k][1], sky[k + 1][1], (t - sky[k][0]) / (sky[k + 1][0] - sky[k][0]));
+  } else c = mix([57, 133, 139], [10, 46, 65], Math.pow((py - 558) / 466, .72));
+  for (let x = 0; x < N; x++) dot(x, y, c);
+}
+
+// Horizontal, rose-edged cloud ribbons leave the paired suns a clear stage.
+for (const [x, y, rx, ry] of [[130, 330, 165, 9], [742, 310, 185, 7], [824, 420, 130, 8]]) {
+  ellipse(x, y, rx, ry, [177, 100, 133], .28);
+  ellipse(x - 12, y - 3, rx * .9, ry * .28, [255, 184, 165], .45);
+}
+halo(418, 470, 163, [255, 204, 125], .34);
+halo(418, 342, 66, [255, 177, 171], .24);
+ellipse(418, 342, 30, 30, [247, 164, 163]);
+ellipse(418, 470, 88, 88, [255, 209, 126]);
+ellipse(418, 467, 83, 83, [255, 213, 137], .24);
+line(40, 558, 744, 558, 1.5, [255, 210, 149], .65);
+
+// One uninterrupted trapezoid of light: narrow at the sun, broad at our feet.
+for (let y = 559 * S; y < 973 * S; y++) {
+  const t = (y / S - 559) / 414, half = 12 + 164 * t;
+  const gold = mix([255, 209, 123], [182, 157, 91], t);
+  for (let x = Math.ceil((418 - half) * S); x < (418 + half) * S; x++) {
+    const edge = clamp((half - Math.abs(x / S - 418)) / 5);
+    dot(x, y, gold, (.87 * Math.pow(1 - t, .85)) * edge);
+  }
+}
+for (let i = 0; i < 27; i++) {
+  const t = i / 26, y = 574 + Math.pow(t, 1.45) * 375;
+  for (let j = 0; j < 5; j++) {
+    const x = 41 + j * 214 + Math.sin(i * 2.3 + j) * 32;
+    const len = 15 + t * 73 + 13 * Math.sin(i + j);
+    line(x, y, x + len, y - .6, .7 + t * .7, [7, 51, 70], .13 + t * .14);
+  }
+}
+for (const [y, w] of [[580, 24], [605, 36], [646, 58], [697, 78], [764, 116], [849, 155]]) {
+  ellipse(418 + Math.sin(y) * 9, y, w / 2, 1.2, [255, 223, 155], .28);
+}
+
+// The far shoulder and the near cape have separate, irregular shorelines.
+poly([[645, 588], [690, 558], [724, 541], [753, 501], [784, 491], [813, 460], [842, 470], [864, 455], [894, 475], [936, 456], [977, 473], [1024, 465], [1024, 704], [947, 687], [866, 660], [791, 627], [721, 615]], [75, 79, 101]);
+poly([[689, 655], [736, 620], [774, 582], [797, 558], [829, 548], [850, 517], [882, 522], [918, 498], [950, 510], [982, 489], [1024, 503], [1024, 803], [976, 778], [923, 743], [867, 723], [828, 693], [772, 685], [735, 667]], [28, 54, 70]);
+poly([[850, 550], [891, 545], [930, 525], [966, 533], [1024, 516], [1024, 549], [964, 551], [916, 564], [880, 562]], [58, 76, 85], .56);
+poly([[811, 605], [852, 591], [899, 603], [948, 580], [1024, 591], [1024, 606], [947, 599], [900, 619], [853, 611]], [66, 82, 89], .36);
+line(695, 660, 773, 691, 2, [200, 184, 147], .55);
+line(780, 694, 828, 704, 1.5, [218, 208, 167], .5);
+
+// The lighthouse, tiny balconies and amber glass make the headland habitable.
+halo(839, 393, 53, [255, 208, 126], .2);
+poly([[824, 466], [830, 398], [846, 398], [853, 466]], cream);
+poly([[840, 398], [846, 398], [853, 466], [841, 466]], [197, 174, 160]);
+rect(825, 382, 26, 17, [255, 201, 114]);
+rect(825, 382, 4, 17, [46, 48, 69]); rect(837, 382, 3, 17, [46, 48, 69]); rect(848, 382, 3, 17, [46, 48, 69]);
+poly([[819, 382], [838, 369], [857, 382]], [44, 47, 67]);
+line(838, 369, 838, 361, 2, cream);
+rect(820, 399, 36, 3, cream); rect(822, 402, 32, 2, [41, 49, 67]);
+rect(835, 424, 5, 9, [247, 180, 103]); rect(836, 450, 6, 15, [57, 58, 72]);
+poly([[851, 390], [973, 368], [973, 403]], [255, 211, 147], .055);
+
+function cottage(x: number, y: number, w: number, h: number) {
+  halo(x + w / 2, y + h / 2, 22, [255, 191, 112], .08);
+  rect(x, y, w, h, [241, 219, 185]);
+  rect(x + w * .76, y, w * .24, h, [173, 164, 153]);
+  poly([[x - 3, y], [x + w * .46, y - 10], [x + w + 3, y]], [113, 82, 91]);
+  rect(x + 4, y + 5, 5, 7, [255, 186, 93]); rect(x + w - 10, y + 5, 5, 7, [255, 186, 93]);
+  rect(x + w * .45, y + h - 10, 5, 10, [57, 65, 77]);
+}
+cottage(758, 644, 29, 22); cottage(788, 651, 32, 25); cottage(820, 661, 25, 21);
+cottage(789, 622, 25, 21); cottage(824, 637, 27, 22);
+line(749, 674, 853, 700, 2, [222, 196, 152], .6);
+for (let i = 0; i < 5; i++) line(777 + i * 9, 679 + i * 2.3, 775 + i * 9, 687 + i * 2.3, 1.5, [212, 185, 146], .55);
+
+function boat(x: number, y: number, s: number) {
+  ellipse(x + 1, y + 10 * s, 32 * s, 2 * s, [211, 199, 163], .18);
+  ellipse(x + 5, y + 18 * s, 22 * s, 1.6 * s, [216, 200, 159], .12);
+  line(x, y - 94 * s, x, y, 2 * s, [47, 55, 68]);
+  poly([[x - 4 * s, y - 88 * s], [x - 43 * s, y - 10 * s], [x - 4 * s, y - 13 * s]], cream);
+  poly([[x + 4 * s, y - 75 * s], [x + 30 * s, y - 14 * s], [x + 4 * s, y - 14 * s]], [243, 213, 171]);
+  poly([[x - 40 * s, y - 5 * s], [x + 37 * s, y - 5 * s], [x + 25 * s, y + 5 * s], [x - 26 * s, y + 5 * s]], [27, 44, 63]);
+  line(x - 36 * s, y - 5 * s, x + 35 * s, y - 5 * s, 2 * s, [221, 160, 117]);
+}
+boat(239, 752, 1); boat(579, 587, .31);
+for (const [x, y, size] of [[615, 368, 12], [650, 353, 9], [693, 384, 11]]) {
+  line(x - size, y - 3, x, y + 2, 2, [65, 52, 78]); line(x, y + 2, x + size, y - 5, 2, [65, 52, 78]);
+}
+
+const font: Record<string, string[]> = {
+  A: ['01110','11011','11011','11111','11011','11011','11011'],
+  C: ['01111','11000','11000','11000','11000','11000','01111'],
+  E: ['11111','11000','11000','11110','11000','11000','11111'],
+  F: ['11111','11000','11000','11110','11000','11000','11000'],
+  H: ['11011','11011','11011','11111','11011','11011','11011'],
   I: ['11111','00100','00100','00100','00100','00100','11111'],
-  L: ['10000','10000','10000','10000','10000','10000','11111'],
-  M: ['10001','11011','10101','10101','10001','10001','10001'],
-  N: ['10001','11001','11001','10101','10011','10011','10001'],
-  O: ['01110','10001','10001','10001','10001','10001','01110'],
-  R: ['11110','10001','10001','11110','10100','10010','10001'],
-  S: ['01111','10000','10000','01110','00001','00001','11110'],
+  L: ['11000','11000','11000','11000','11000','11000','11111'],
+  M: ['10001','11011','11111','10101','10001','10001','10001'],
+  N: ['11001','11001','11101','11111','11011','11011','11001'],
+  O: ['01110','11011','11011','11011','11011','11011','01110'],
+  R: ['11110','11011','11011','11110','11100','11010','11011'],
+  S: ['01111','11000','11000','01110','00011','00011','11110'],
   T: ['11111','00100','00100','00100','00100','00100','00100'],
-  U: ['10001','10001','10001','10001','10001','10001','01110'],
-  W: ['10001','10001','10001','10101','10101','10101','01010'],
-  Y: ['10001','10001','01010','00100','00100','00100','00100']
+  U: ['11011','11011','11011','11011','11011','11011','01110'],
+  W: ['10001','10001','10001','10101','11111','11011','10001'],
+  ' ': ['00000','00000','00000','00000','00000','00000','00000'],
 };
-const COPY = 'SOLMARA WHERE THE SUN SETS TWICE THE ISLE OF TWO SUNSETS';
-for (const char of new Set(COPY.replaceAll(' ', ''))) {
-  if (!FONT[char]) throw new Error(`Missing poster glyph: ${char}`);
-}
-
-const rgb = (r, g, b) => [r, g, b];
-function smooth(t) { return t * t * (3 - 2 * t); }
-function gradient(stops, t) {
-  t = Math.max(0, Math.min(1, t));
-  for (let i = 1; i < stops.length; i++) {
-    if (t <= stops[i][0]) {
-      const a = stops[i - 1], b = stops[i];
-      const u = smooth((t - a[0]) / (b[0] - a[0]));
-      return a[1].map((v, c) => Math.round(v + (b[1][c] - v) * u));
-    }
+function text(str: string, y: number, size: number, gap: number, c: Color, shadow = false) {
+  const width = str.length * 5 * size + (str.length - 1) * gap;
+  const start = (W - width) / 2;
+  for (const ch of str) if (!font[ch]) throw new Error(`Missing glyph ${ch}`);
+  function draw(dx: number, dy: number, color: Color, alpha: number) {
+    [...str].forEach((ch, i) => font[ch].forEach((row, j) => [...row].forEach((v, k) => {
+      if (v === '1') rect(start + i * (5 * size + gap) + k * size + dx, y + j * size + dy, size, size, color, alpha);
+    })));
   }
-  return stops[stops.length - 1][1];
+  if (shadow) draw(3, 3, [38, 27, 62], .35);
+  draw(0, 0, c, 1);
 }
-const skyStops = [
-  [0, rgb(43, 36, 91)], [.27, rgb(82, 48, 115)], [.57, rgb(154, 72, 119)],
-  [.84, rgb(221, 105, 98)], [1, rgb(244, 164, 83)]
-];
-const seaStops = [
-  [0, rgb(17, 68, 78)], [.3, rgb(14, 59, 72)], [.72, rgb(11, 47, 63)], [1, rgb(9, 39, 56)]
-];
-for (let y = 0; y < H; y++) {
-  const logicalY = y / SCALE;
-  const color = logicalY < 622
-    ? gradient(skyStops, logicalY / 622)
-    : gradient(seaStops, (logicalY - 622) / (OUT_H - 622));
-  let p = y * W * 3;
-  for (let x = 0; x < W; x++, p += 3) {
-    pixels[p] = color[0]; pixels[p + 1] = color[1]; pixels[p + 2] = color[2];
-  }
+text('SOLMARA', 94, 20, 20, cream, true);
+text('WHERE THE SUN SETS TWICE', 266, 2.5, 4, cream);
+line(393, 306, 443, 306, 1, cream, .6);
+text('THE ISLE OF TWO SUNSETS', 951, 2, 3.5, cream);
+rect(26, 26, 972, 1.5, cream, .8); rect(26, 996.5, 972, 1.5, cream, .8);
+rect(26, 26, 1.5, 972, cream, .8); rect(996.5, 26, 1.5, 972, cream, .8);
+
+// RGB PNG, box-filtered from the 2x working canvas; no ancillary chunks.
+const raw = Buffer.alloc((W * 3 + 1) * W);
+for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) for (let k = 0; k < 3; k++) {
+  const p = ((y * 2) * N + x * 2) * 3 + k;
+  raw[y * (W * 3 + 1) + 1 + x * 3 + k] = Math.round((pixels[p] + pixels[p + 3] + pixels[p + N * 3] + pixels[p + N * 3 + 3]) / 4);
 }
-
-function rect(x, y, width, height, color, alpha = 1) {
-  const x0 = Math.max(0, Math.floor(x * SCALE));
-  const y0 = Math.max(0, Math.floor(y * SCALE));
-  const x1 = Math.min(W, Math.ceil((x + width) * SCALE));
-  const y1 = Math.min(H, Math.ceil((y + height) * SCALE));
-  for (let py = y0; py < y1; py++) {
-    let p = (py * W + x0) * 3;
-    for (let px = x0; px < x1; px++, p += 3) {
-      pixels[p] = Math.round(pixels[p] * (1 - alpha) + color[0] * alpha);
-      pixels[p + 1] = Math.round(pixels[p + 1] * (1 - alpha) + color[1] * alpha);
-      pixels[p + 2] = Math.round(pixels[p + 2] * (1 - alpha) + color[2] * alpha);
-    }
-  }
+const table = new Uint32Array(256);
+for (let i = 0; i < 256; i++) {
+  let c = i; for (let j = 0; j < 8; j++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  table[i] = c >>> 0;
 }
-function circle(cx, cy, radius, color, alpha = 1) {
-  const xCenter = cx * SCALE, yCenter = cy * SCALE, r = radius * SCALE;
-  for (let py = Math.max(0, Math.floor(yCenter - r)); py < Math.min(H, Math.ceil(yCenter + r)); py++) {
-    const dy = py + .5 - yCenter;
-    const dx = Math.sqrt(Math.max(0, r * r - dy * dy));
-    const x0 = Math.max(0, Math.ceil(xCenter - dx));
-    const x1 = Math.min(W, Math.floor(xCenter + dx));
-    let p = (py * W + x0) * 3;
-    for (let px = x0; px <= x1; px++, p += 3) {
-      pixels[p] = Math.round(pixels[p] * (1 - alpha) + color[0] * alpha);
-      pixels[p + 1] = Math.round(pixels[p + 1] * (1 - alpha) + color[1] * alpha);
-      pixels[p + 2] = Math.round(pixels[p + 2] * (1 - alpha) + color[2] * alpha);
-    }
-  }
-}
-function polygon(points, color) {
-  const pts = points.map(([x, y]) => [x * SCALE, y * SCALE]);
-  const minY = Math.max(0, Math.floor(Math.min(...pts.map(p => p[1]))));
-  const maxY = Math.min(H, Math.ceil(Math.max(...pts.map(p => p[1]))));
-  for (let y = minY; y < maxY; y++) {
-    const scan = y + .5, xs = [];
-    for (let i = 0; i < pts.length; i++) {
-      const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % pts.length];
-      if ((y1 <= scan && y2 > scan) || (y2 <= scan && y1 > scan))
-        xs.push(x1 + (scan - y1) * (x2 - x1) / (y2 - y1));
-    }
-    xs.sort((a, b) => a - b);
-    for (let i = 0; i + 1 < xs.length; i += 2) {
-      const x0 = Math.max(0, Math.ceil(xs[i]));
-      const x1 = Math.min(W, Math.floor(xs[i + 1]));
-      let p = (y * W + x0) * 3;
-      for (let x = x0; x <= x1; x++, p += 3) {
-        pixels[p] = color[0]; pixels[p + 1] = color[1]; pixels[p + 2] = color[2];
-      }
-    }
-  }
-}
-function line(x1, y1, x2, y2, color, width, alpha = 1) {
-  const dx = x2 - x1, dy = y2 - y1, len2 = dx * dx + dy * dy;
-  const steps = Math.max(1, Math.ceil(Math.sqrt(len2) * 2));
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    circle(x1 + dx * t, y1 + dy * t, width / 2, color, alpha);
-  }
-}
-
-// A thin warm horizon separates the two calm colour fields.
-rect(0, 620, 1024, 2, [248, 180, 112], .8);
-
-// A pair of suns: the lower amber disc and its smaller rose echo.
-circle(376, 531, 82, [241, 157, 76]);
-circle(706, 360, 43, [231, 124, 132]);
-// Fine cut lines make the lower disc feel like a printed vintage sun.
-rect(302, 547, 148, 3, [225, 126, 83], .62);
-rect(313, 560, 126, 3, [225, 126, 83], .62);
-rect(329, 574, 94, 3, [225, 126, 83], .62);
-
-// Distant warm cloud strokes, kept sparse so the sky remains open.
-rect(104, 394, 119, 2, [255, 196, 150], .28);
-rect(145, 402, 72, 2, [255, 196, 150], .2);
-rect(540, 464, 94, 2, [255, 191, 139], .24);
-rect(575, 472, 57, 2, [255, 191, 139], .17);
-
-// Little birds, each a pair of calm dark strokes.
-const bird = (x, y, s) => {
-  line(x, y, x + s * .48, y + s * .32, [74, 47, 85], 2.2, .85);
-  line(x + s * .48, y + s * .32, x + s, y, [74, 47, 85], 2.2, .85);
-};
-bird(188, 288, 17); bird(231, 314, 12); bird(825, 278, 15); bird(862, 300, 10);
-
-// Gentle, broken gold reflection broadens toward the viewer.
-for (let y = 628, row = 0; y < 920; y += 9, row++) {
-  const t = (y - 628) / (920 - 628);
-  const half = 8 + t * 91;
-  const alpha = .3 + .28 * (1 - t);
-  const color = row % 3 === 0 ? [250, 194, 111] : [233, 155, 88];
-  const offset = row % 2 ? half * .18 : -half * .12;
-  const center = 376 + offset;
-  rect(center - half, y, half * .62, 3.2, color, alpha);
-  rect(center + half * .18, y, half * .82, 3.2, color, alpha * .82);
-}
-
-// A single dark headland anchors the right third of the island.
-const cliff = [
-  [752, 621], [779, 567], [797, 539], [818, 530], [836, 493], [856, 506],
-  [875, 468], [899, 480], [920, 446], [943, 465], [963, 440], [986, 456],
-  [1024, 432], [1024, 1024], [752, 1024]
-];
-polygon(cliff, [22, 42, 60]);
-polygon([[752,621],[779,567],[797,539],[818,530],[836,493],[856,506],[875,468],[899,480],[920,446],[943,465],[963,440],[986,456],[1024,432],[1024,622]], [28, 55, 69]);
-
-// The slim white lighthouse rises from the ridge, with a warm lantern room.
-rect(895, 365, 17, 101, [238, 226, 196]);
-polygon([[891, 366], [916, 366], [913, 356], [894, 356]], [245, 226, 187]);
-rect(893, 345, 21, 13, [248, 207, 145]);
-rect(890, 343, 27, 4, [250, 224, 181]);
-polygon([[889, 343], [918, 343], [904, 334]], [63, 48, 68]);
-rect(899, 348, 9, 7, [255, 192, 103]);
-rect(899, 389, 8, 13, [224, 151, 92]);
-rect(899, 422, 8, 13, [224, 151, 92]);
-rect(889, 461, 29, 7, [211, 202, 179]);
-
-// Three tiny sailboats give the sea a human scale.
-const boat = (x, y, s) => {
-  polygon([[x, y], [x + s, y], [x + s * .78, y + s * .24], [x + s * .2, y + s * .24]], [18, 43, 58]);
-  rect(x + s * .46, y - s * .76, 1.5, s * .76, [231, 220, 194]);
-  polygon([[x + s * .43, y - s * .68], [x + s * .43, y - s * .1], [x + s * .08, y - s * .1]], [239, 221, 188]);
-  polygon([[x + s * .52, y - s * .61], [x + s * .52, y - s * .1], [x + s * .87, y - s * .1]], [213, 177, 145]);
-};
-boat(158, 746, 34); boat(565, 797, 27); boat(677, 711, 29);
-
-// Restrained water bands, drawn behind the border and footer.
-for (const [x, y, w] of [[68,671,91],[222,682,70],[470,661,66],[553,679,43],[643,660,54],[159,822,70],[469,856,60],[574,901,78],[312,925,48]]) {
-  rect(x, y, w, 1.7, [128, 171, 164], .24);
-}
-
-const cream = [255, 239, 205];
-function textWidth(text, cell, gap) {
-  let width = 0;
-  for (const ch of text) width += ch === ' ' ? cell * 2.5 : cell * 5;
-  return width + Math.max(0, text.length - 1) * gap;
-}
-function drawText(text, x, y, cell, gap, color, shadow = null) {
-  let cursor = x;
-  for (const ch of text) {
-    if (ch === ' ') { cursor += cell * 2.5 + gap; continue; }
-    const glyph = FONT[ch];
-    for (let row = 0; row < 7; row++) {
-      for (let col = 0; col < 5; col++) {
-        if (glyph[row][col] === '1') {
-          if (shadow) rect(cursor + col * cell + shadow.dx, y + row * cell + shadow.dy, cell, cell, shadow.color, shadow.alpha);
-          rect(cursor + col * cell, y + row * cell, cell, cell, color);
-        }
-      }
-    }
-    cursor += cell * 5 + gap;
-  }
-}
-
-// Main name: increased scale makes the island's name the unmistakable first read.
-const title = 'SOLMARA', titleCell = 15, titleGap = 4;
-drawText(title, (OUT_W - textWidth(title, titleCell, titleGap)) / 2, 76, titleCell, titleGap, cream,
-  { dx: 2, dy: 3, color: [52, 37, 84], alpha: .55 });
-const tagline = 'WHERE THE SUN SETS TWICE', tagCell = 4, tagGap = 3;
-drawText(tagline, (OUT_W - textWidth(tagline, tagCell, tagGap)) / 2, 194, tagCell, tagGap,
-  [255, 229, 196], { dx: 1, dy: 1, color: [61, 42, 87], alpha: .55 });
-const footer = 'THE ISLE OF TWO SUNSETS', footCell = 3, footGap = 3;
-drawText(footer, (OUT_W - textWidth(footer, footCell, footGap)) / 2, 954, footCell, footGap, cream);
-
-// A paired, hairline cream frame encloses the print.
-rect(19, 19, 986, 2, cream, .9); rect(19, 1003, 986, 2, cream, .9);
-rect(19, 19, 2, 986, cream, .9); rect(1003, 19, 2, 986, cream, .9);
-rect(25, 25, 974, 1, [255, 239, 205], .38); rect(25, 998, 974, 1, [255, 239, 205], .38);
-rect(25, 25, 1, 974, [255, 239, 205], .38); rect(998, 25, 1, 974, [255, 239, 205], .38);
-
-function downsample() {
-  const out = Buffer.alloc(OUT_W * OUT_H * 3);
-  for (let y = 0; y < OUT_H; y++) {
-    for (let x = 0; x < OUT_W; x++) {
-      const a = ((y * 2) * W + x * 2) * 3;
-      const b = a + W * 3;
-      const d = (y * OUT_W + x) * 3;
-      for (let c = 0; c < 3; c++) out[d + c] = (pixels[a + c] + pixels[a + 3 + c] + pixels[b + c] + pixels[b + 3 + c] + 2) >> 2;
-    }
-  }
+function chunk(name: string, data: Buffer) {
+  const type = Buffer.from(name), body = Buffer.concat([type, data]);
+  let crc = 0xffffffff; for (const v of body) crc = table[(crc ^ v) & 255] ^ (crc >>> 8);
+  const out = Buffer.alloc(data.length + 12); out.writeUInt32BE(data.length, 0); body.copy(out, 4); out.writeUInt32BE((crc ^ 0xffffffff) >>> 0, out.length - 4);
   return out;
 }
-function crc32(buffer) {
-  let crc = 0xffffffff;
-  for (const value of buffer) {
-    crc ^= value;
-    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-function chunk(type, data) {
-  const name = Buffer.from(type, 'ascii');
-  const body = Buffer.concat([name, data]);
-  const length = Buffer.alloc(4); length.writeUInt32BE(data.length);
-  const checksum = Buffer.alloc(4); checksum.writeUInt32BE(crc32(body));
-  return Buffer.concat([length, body, checksum]);
-}
-function encodePNG(image) {
-  const scanlines = Buffer.alloc(OUT_H * (OUT_W * 3 + 1));
-  for (let y = 0; y < OUT_H; y++) {
-    const dst = y * (OUT_W * 3 + 1);
-    scanlines[dst] = 0;
-    image.copy(scanlines, dst + 1, y * OUT_W * 3, (y + 1) * OUT_W * 3);
-  }
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(OUT_W, 0); ihdr.writeUInt32BE(OUT_H, 4);
-  ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-  return Buffer.concat([
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk('IHDR', ihdr), chunk('IDAT', deflateSync(scanlines, { level: 9 })), chunk('IEND', Buffer.alloc(0))
-  ]);
-}
-
-const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-mkdirSync(outputDir, { recursive: true });
-writeFileSync(join(outputDir, 'entry.png'), encodePNG(downsample()));
+const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(W, 4); ihdr[8] = 8; ihdr[9] = 2;
+const png = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw, { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
+if (png.length > 1048576) throw new Error('PNG exceeds the gate');
+const dir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output'; mkdirSync(dir, { recursive: true });
+writeFileSync(join(dir, 'entry.png'), png);
+console.log(`SOLMARA: ${W}x${W}, ${png.length} bytes`);
